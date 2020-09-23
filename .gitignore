@@ -7,3 +7,5 @@
 GameServerServer.vcxproj
 GameServerServer.vcxproj.filters
 GameServerServer.vcxproj.user
+/Debug
+/.vs/GameServerServer/v16

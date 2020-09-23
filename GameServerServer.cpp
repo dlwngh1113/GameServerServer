@@ -4,8 +4,16 @@
 using namespace std;
 #pragma comment (lib, "ws2_32.lib")
 
-constexpr int BUF_SIZE = 1024;
-constexpr short PORT = 3500;
+#define BUF_SIZE 1024
+#define PORT 3500
+
+char messageBuffer[BUF_SIZE];
+SOCKET clientSocket;
+WSABUF wsaBuf;
+
+void error_display(const char* msg, int err_no);
+void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flasgs);
+void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flasgs);
 
 void error_display(const char* msg, int err_no)
 {
@@ -22,29 +30,63 @@ void error_display(const char* msg, int err_no)
 	LocalFree(h_mess);
 }
 
+void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flasgs)
+{
+	if (bytes > 0)
+		cout << "TRACE - Send message : " << messageBuffer << "(" << bytes << "bytes)\n";
+	else {
+		closesocket(clientSocket);
+		return;
+	}
+	wsaBuf.len = BUF_SIZE;
+	ZeroMemory(&over, sizeof(*over));
+	DWORD flag = NULL;
+	int ret = WSARecv(clientSocket, &wsaBuf, 1, NULL, &flag, over, Recv_Complete);
+}
+
+void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flasgs)
+{
+	if (bytes > 0) {
+		messageBuffer[bytes] = NULL;
+		cout << "TRACE - Recv message : " << messageBuffer << "(" << bytes << "bytes)\n";
+	}
+	else {
+		closesocket(clientSocket);
+		return;
+	}
+	wsaBuf.len = bytes;
+	ZeroMemory(&over, sizeof(*over));
+	int ret = WSASend(clientSocket, &wsaBuf, 1, NULL, NULL, over, Send_Complete);
+}
+
 int main()
 {
-	wcout.imbue(std::locale("korean"));
 	WSADATA WSAdata;
 	WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	SOCKET s_socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
-	SOCKADDR_IN server_a;
-	memset(&server_a, 0, sizeof(server_a));
-	server_a.sin_family = AF_INET;
-	server_a.sin_port = htons(PORT);
-	server_a.sin_addr.s_addr = INADDR_ANY;
-	::bind(s_socket, (sockaddr*)&server_a, sizeof(server_a));
-	listen(s_socket, SOMAXCONN);
+	SOCKET listenSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
+	SOCKADDR_IN serverAddr;
+	memset(&serverAddr, 0, sizeof(serverAddr));
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_port = htons(PORT);
+	serverAddr.sin_addr.s_addr = INADDR_ANY;
+	::bind(listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
+	listen(listenSocket, SOMAXCONN);
 
 	POINT playerPt{ NULL,NULL };
 
+	SOCKADDR_IN clientAddr;
+	WSAOVERLAPPED overlapped;
+
 	while (true) {
-		SOCKADDR_IN client_addr;
-		int a_size = sizeof(client_addr);
-		SOCKET c_socket = WSAAccept(s_socket, (sockaddr*)&client_addr, &a_size, NULL, NULL);
-		if (SOCKET_ERROR == c_socket)
-			error_display("WSAAccept", WSAGetLastError());
-		cout << "New Client Accepted\n";
+		int addSize = sizeof(clientAddr);
+		clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &addSize);
+
+		wsaBuf.buf = messageBuffer;
+		wsaBuf.len = BUF_SIZE;
+		DWORD flags = 0;
+		ZeroMemory(&overlapped, sizeof(overlapped));
+		int recvBytes = WSARecv(clientSocket, &wsaBuf, 1, NULL, &flags, &overlapped, Recv_Complete);
+
 		while (true) {
 			char buff[BUF_SIZE + 1];
 			WSABUF wsabuf;
@@ -52,7 +94,7 @@ int main()
 			wsabuf.len = BUF_SIZE;
 			DWORD num_recv;
 			DWORD flag = 0;
-			WSARecv(c_socket, &wsabuf, 1, &num_recv, &flag, NULL, NULL);
+			WSARecv(clientSocket, &wsabuf, 1, &num_recv, &flag, NULL, NULL);
 			cout << "Recieved " << num_recv << "Bytes [" << wsabuf.buf << "]\n";
 			if (0 == num_recv)break;
 
@@ -75,15 +117,15 @@ int main()
 
 			DWORD num_sent;
 			wsabuf.len = strlen(wsabuf.buf);
-			int ret = WSASend(c_socket, &wsabuf, 1, &num_sent, 0, NULL, NULL);
+			int ret = WSASend(clientSocket, &wsabuf, 1, &num_sent, 0, NULL, NULL);
 			if (SOCKET_ERROR == ret) {
 				error_display("WSASend", WSAGetLastError());
 			}
 			cout << "Sent " << wsabuf.len << "Bytes [" << buff << "]\n";
 		}
 		cout << "Client Connection Closed\n";
-		closesocket(c_socket);
+		closesocket(clientSocket);
 	}
-	closesocket(s_socket);
+	closesocket(listenSocket);
 	WSACleanup();
 }
