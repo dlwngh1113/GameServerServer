@@ -1,48 +1,96 @@
 ﻿#define _CRT_SECURE_NO_WARNINGS
 #include<iostream>
+#include<string>
+#include<map>
 #include<WS2tcpip.h>
 using namespace std;
 #pragma comment (lib, "ws2_32.lib")
 
 #define BUF_SIZE 1024
 #define PORT 3500
+#define SECTOR_SIZE 80
 
-char messageBuffer[BUF_SIZE];
-SOCKET clientSocket;
-WSABUF wsaBuf;
+struct Client {
+	short x, y;
+
+	SOCKET socket;
+	char messageBuffer[BUF_SIZE + 1];
+	WSABUF wsaBuf;
+	WSAOVERLAPPED overlapped;
+};
+
+map<SOCKET, Client> clients;
 
 void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
 void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
 
 void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags)
 {
-	if (bytes > 0)
-		cout << "TRACE - Send message : " << messageBuffer << "(" << bytes << "bytes)\n";
+	SOCKET target = reinterpret_cast<SOCKET>(over->hEvent);
+
+	if (bytes > 0) {
+		string s;
+		int idx = 0;
+		if (!strcmp(clients[target].messageBuffer, "VK_LEFT")) {
+			if(clients[target].x - SECTOR_SIZE >= 0)
+				clients[target].x -= 80;
+			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+		}
+		else if (!strcmp(clients[target].messageBuffer, "VK_RIGHT")) {
+			if (clients[target].x + SECTOR_SIZE <= SECTOR_SIZE * 8)
+				clients[target].x += 80;
+			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+		}
+		else if (!strcmp(clients[target].messageBuffer, "VK_UP")) {
+			if (clients[target].y - SECTOR_SIZE >= 0)
+				clients[target].y -= 80;
+			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+		}
+		else if (!strcmp(clients[target].messageBuffer, "VK_DOWN")) {
+			if (clients[target].y - SECTOR_SIZE <= SECTOR_SIZE * 8)
+				clients[target].y += 80;
+			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+		}
+		for (auto& client : clients) {
+			if (client.first != target) {
+				++idx;
+				s += " " + to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+			}
+		}
+		strcpy_s(clients[target].messageBuffer, s.c_str());
+		cout << "TRACE - Send message : " << clients[target].messageBuffer << "(" << bytes << "bytes)\n";
+	}
 	else {
 		cout << "Client Connection Closed\n";
-		closesocket(clientSocket);
+		closesocket(clients[target].socket);
+		clients.erase(target);
 		return;
 	}
-	wsaBuf.len = BUF_SIZE;
-	//ZeroMemory(&over, sizeof(*over));
-	DWORD flag = NULL;
-	int ret = WSARecv(clientSocket, &wsaBuf, 1, NULL, &flag, over, Recv_Complete);
+	clients[target].wsaBuf.len = BUF_SIZE;
+	ZeroMemory(over, sizeof(*over));
+	clients[target].overlapped.hEvent = (HANDLE)target;
+	DWORD flag = 0;
+	int ret = WSARecv(clients[target].socket, &clients[target].wsaBuf, 1, NULL, &flag, &clients[target].overlapped, Recv_Complete);
 }
 
 void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags)
 {
+	SOCKET target = reinterpret_cast<SOCKET>(over->hEvent);
+
 	if (bytes > 0) {
-		messageBuffer[bytes] = NULL;
-		cout << "TRACE - Recv message : " << messageBuffer << "(" << bytes << "bytes)\n";
+		clients[target].messageBuffer[bytes] = NULL;
+		cout << "TRACE - Recv message : " << clients[target].messageBuffer << "(" << bytes << "bytes)\n";
 	}
 	else {
 		cout << "Client Connection Closed\n";
-		closesocket(clientSocket);
+		closesocket(clients[target].socket);
+		clients.erase(target);
 		return;
 	}
-	wsaBuf.len = bytes;
-	//ZeroMemory(&over, sizeof(*over));
-	int ret = WSASend(clientSocket, &wsaBuf, 1, NULL, NULL, over, Send_Complete);
+	clients[target].wsaBuf.len = bytes;
+	ZeroMemory(over, sizeof(*over));
+	clients[target].overlapped.hEvent = (HANDLE)target;
+	int ret = WSASend(clients[target].socket, &clients[target].wsaBuf, 1, NULL, NULL, &clients[target].overlapped, Send_Complete);
 }
 
 int main()
@@ -58,20 +106,22 @@ int main()
 	::bind(listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
 	listen(listenSocket, SOMAXCONN);
 
-	POINT playerPt{ NULL,NULL };
-
-	SOCKADDR_IN clientAddr;
-	WSAOVERLAPPED overlapped;
-
+	//client socket init
 	while (true) {
-		int addrSize = sizeof(clientAddr);
-		clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &addrSize);
+		SOCKADDR_IN addr{};
+		int addrsize = sizeof(addr);
+		SOCKET id = WSAAccept(listenSocket, (sockaddr*)&addr, &addrsize, NULL, NULL);
 
-		wsaBuf.buf = messageBuffer;
-		wsaBuf.len = BUF_SIZE;
+		//	//clients socket process
+		clients[id] = Client{};
+		clients[id].socket = id;
+		clients[id].x = clients[id].y = 0;
+		clients[id].wsaBuf.buf = clients[id].messageBuffer;
+		clients[id].wsaBuf.len = BUF_SIZE;
+		ZeroMemory(&clients[id].overlapped, sizeof(clients[id].overlapped));
+		clients[id].overlapped.hEvent = (HANDLE)id;
 		DWORD flags = 0;
-		ZeroMemory(&overlapped, sizeof(overlapped));
-		int recvBytes = WSARecv(clientSocket, &wsaBuf, 1, NULL, &flags, &overlapped, Recv_Complete);
+		int recvBytes = WSARecv(clients[id].socket, &clients[id].wsaBuf, 1, NULL, &flags, &clients[id].overlapped, Recv_Complete);
 	}
 	closesocket(listenSocket);
 	WSACleanup();
