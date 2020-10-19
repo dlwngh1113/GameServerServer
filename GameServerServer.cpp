@@ -10,13 +10,23 @@ using namespace std;
 #define PORT 3500
 #define SECTOR_SIZE 80
 
+struct King {
+	char id;
+	long x;
+	long y;
+};
+
 struct Client {
-	short x, y;
+	King king;
 
 	SOCKET socket;
-	char messageBuffer[BUF_SIZE + 1];
-	WSABUF wsaBuf;
-	WSAOVERLAPPED overlapped;
+
+	char sendBuffer[BUF_SIZE + 1];
+	char recvBuffer[BUF_SIZE + 1];
+	WSABUF sendWsabuf;
+	WSABUF recvWsabuf;
+	WSAOVERLAPPED sendOver;
+	WSAOVERLAPPED recvOver;
 };
 
 map<SOCKET, Client> clients;
@@ -29,7 +39,7 @@ void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD 
 	SOCKET target = reinterpret_cast<SOCKET>(over->hEvent);
 
 	if (bytes > 0) {
-		cout << "TRACE - Send message : " << clients[target].messageBuffer << "(" << bytes << "bytes)\n";
+		cout << "TRACE - Send message : " << clients[target].sendBuffer << "(" << bytes << "bytes)\n";
 	}
 	else {
 		cout << "Send_Complete error : Client Connection Closed\n";
@@ -37,11 +47,11 @@ void CALLBACK Send_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD 
 		clients.erase(target);
 		return;
 	}
-	clients[target].wsaBuf.len = BUF_SIZE;
+	clients[target].recvWsabuf.len = BUF_SIZE;
 	ZeroMemory(over, sizeof(*over));
 	over->hEvent = (HANDLE)target;
 	DWORD flag = 0;
-	int ret = WSARecv(clients[target].socket, &clients[target].wsaBuf, 1, NULL, &flag, over, Recv_Complete);
+	WSARecv(clients[target].socket, &clients[target].recvWsabuf, 1, NULL, &flag, over, Recv_Complete);
 }
 
 void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags)
@@ -49,41 +59,34 @@ void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD 
 	SOCKET target = reinterpret_cast<SOCKET>(over->hEvent);
 
 	if (bytes > 0) {
-		cout << "TRACE - Recv message : " << atoi(clients[target].messageBuffer) << "(" << bytes << "bytes)\n";
+		cout << "TRACE - Recv message : " << atoi(clients[target].recvBuffer) << "(" << bytes << "bytes)\n";
 		string s{};
-		int idx{ 0 };
-		WPARAM wParam = atoi(clients[target].messageBuffer);
+		WPARAM wParam = atoi(clients[target].recvBuffer);
 		switch (wParam)
 		{
 		case VK_LEFT:
-			if (clients[target].x - SECTOR_SIZE >= 0)
-				clients[target].x -= 80;
-			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+			if (clients[target].king.x - SECTOR_SIZE >= 0)
+				clients[target].king.x -= 80;
+			s += to_string(clients[target].king.id) + " " + to_string(clients[target].king.x) + " " + to_string(clients[target].king.y);
 			break;
 		case VK_RIGHT:
-			if (clients[target].x + SECTOR_SIZE <= SECTOR_SIZE * 8)
-				clients[target].x += 80;
-			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+			if (clients[target].king.x + SECTOR_SIZE <= SECTOR_SIZE * 8)
+				clients[target].king.x += 80;
+			s += to_string(clients[target].king.id) + " " + to_string(clients[target].king.x) + " " + to_string(clients[target].king.y);
 			break;
 		case VK_UP:
-			if (clients[target].y - SECTOR_SIZE >= 0)
-				clients[target].y -= 80;
-			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
-			break;
+			if (clients[target].king.y - SECTOR_SIZE >= 0)
+				clients[target].king.y -= 80;
+			s += to_string(clients[target].king.id) + " " + to_string(clients[target].king.x) + " " + to_string(clients[target].king.y);
+			break; 
 		case VK_DOWN:
-			if (clients[target].y + SECTOR_SIZE <= SECTOR_SIZE * 8)
-				clients[target].y += 80;
-			s += to_string(idx) + " " + to_string(clients[target].x) + " " + to_string(clients[target].y);
+			if (clients[target].king.y + SECTOR_SIZE <= SECTOR_SIZE * 8)
+				clients[target].king.y += 80;
+			s += to_string(clients[target].king.id) + " " + to_string(clients[target].king.x) + " " + to_string(clients[target].king.y);
 			break;
 		}
-		for (auto& client : clients) {
-			if (client.first != target) {
-				++idx;
-				s += " " + to_string(idx) + " " + to_string(clients[client.first].x) + " " + to_string(clients[client.first].y);
-			}
-		}
-		strcpy_s(clients[target].messageBuffer, s.c_str());
-		clients[target].wsaBuf.buf = clients[target].messageBuffer;
+		strcpy_s(clients[target].sendBuffer, s.c_str());
+		clients[target].sendWsabuf.buf = clients[target].sendBuffer;
 	}
 	else {
 		cout << "Recv_Complete error : Client Connection Closed\n";
@@ -91,15 +94,19 @@ void CALLBACK Recv_Complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD 
 		clients.erase(target);
 		return;
 	}
-	ZeroMemory(over, sizeof(*over));
-	over->hEvent = (HANDLE)target;
-	WSASend(clients[target].socket, &clients[target].wsaBuf, 1, NULL, NULL, over, Send_Complete);
+	for (auto& p : clients){
+		ZeroMemory(&p.second.sendOver, sizeof(p.second.sendOver));
+		p.second.sendOver.hEvent = reinterpret_cast<HANDLE>(p.second.socket);
+		WSASend(p.second.socket, &p.second.sendWsabuf, 1, NULL, NULL, &p.second.sendOver, Send_Complete);
+	}
+	//WSASend(clients[target].socket, &clients[target].wsaBuf, 1, NULL, NULL, over, Send_Complete);
 }
 
 int main()
 {
 	WSADATA WSAdata;
-	WSAStartup(MAKEWORD(2, 2), &WSAdata);
+	if(WSAStartup(MAKEWORD(2, 2), &WSAdata) != 0)
+		return 1;
 	SOCKET listenSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
 	SOCKADDR_IN serverAddr;
 	ZeroMemory(&serverAddr, sizeof(serverAddr));
@@ -108,6 +115,7 @@ int main()
 	serverAddr.sin_addr.s_addr = INADDR_ANY;
 	::bind(listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr));
 	listen(listenSocket, SOMAXCONN);
+	char kingId = 0;
 
 	//client socket init
 	while (true) {
@@ -115,16 +123,22 @@ int main()
 		int addrsize = sizeof(addr);
 		SOCKET id = WSAAccept(listenSocket, (sockaddr*)&addr, &addrsize, NULL, NULL);
 
-		//	//clients socket process
+		//clients socket process
 		clients[id] = Client{};
 		clients[id].socket = id;
-		clients[id].x = clients[id].y = 0;
-		clients[id].wsaBuf.buf = clients[id].messageBuffer;
-		clients[id].wsaBuf.len = BUF_SIZE;
-		ZeroMemory(&clients[id].overlapped, sizeof(clients[id].overlapped));
-		clients[id].overlapped.hEvent = (HANDLE)id;
+		clients[id].king.x = clients[id].king.y = 0;
+		clients[id].sendWsabuf.buf = clients[id].sendBuffer;
+		clients[id].recvWsabuf.buf = clients[id].recvBuffer;
+		clients[id].sendWsabuf.len = BUF_SIZE;
+		clients[id].recvWsabuf.len = BUF_SIZE;
+		ZeroMemory(&clients[id].sendOver, sizeof(clients[id].sendOver));
+		ZeroMemory(&clients[id].recvOver, sizeof(clients[id].recvOver));
+		clients[id].recvOver.hEvent = (HANDLE)id;
+		clients[id].king.id = kingId++;
+		//클라이언트 세팅
 		DWORD flags = 0;
-		int recvBytes = WSARecv(clients[id].socket, &clients[id].wsaBuf, 1, NULL, &flags, &clients[id].overlapped, Recv_Complete);
+		//클라이언트에서 보내주는 데이터 대기
+		int recvBytes = WSARecv(clients[id].socket, &clients[id].recvWsabuf, 1, NULL, &flags, &clients[id].recvOver, Recv_Complete);
 	}
 	closesocket(listenSocket);
 	WSACleanup();
