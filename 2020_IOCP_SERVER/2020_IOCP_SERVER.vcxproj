@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{a033da46-157a-4108-ab32-11cdd965a9b4}</ProjectGuid>
-    <RootNamespace>GameServerServer</RootNamespace>
+    <ProjectGuid>{a4e3278d-71c6-4e6c-b8c1-8a3731ef0047}</ProjectGuid>
+    <RootNamespace>My2020IOCPSERVER</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -139,7 +139,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="GameServerServer.cpp" />
+    <ClCompile Include="iocp_server.cpp" />
+    <ClCompile Include="Sector.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="protocol.h" />
+    <ClInclude Include="Sector.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
