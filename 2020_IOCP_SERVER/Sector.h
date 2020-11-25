@@ -44,15 +44,12 @@ struct client_info {
 
 class Sector
 {
-	RECT rect;
 public:
 	unordered_set<int> clientList;
 	mutex s_lock;
-	Sector(int x, int y, int w, int h);
+	Sector() = default;
 	virtual ~Sector();
 	bool isInSector(int idx);
-	bool isInSector(int x, int y);
 	void insertClient(int id);
 	void removeClient(int id);
 };
-

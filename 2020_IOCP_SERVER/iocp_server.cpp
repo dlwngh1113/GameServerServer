@@ -166,10 +166,7 @@ void send_leave_packet(int to_client, int new_id)
 
 int find_sector_index(int x, int y)
 {
-	for (int i = 0; i < VIEW_LIMIT * VIEW_LIMIT; ++i)
-		if (g_sectors[i]->isInSector(x, y))
-			return i;
-	return -1;
+	return ((x / SECTOR_WIDTH * VIEW_LIMIT) + (y / SECTOR_HEIGHT));
 }
 
 void process_move(int id, char dir)
@@ -192,8 +189,13 @@ void process_move(int id, char dir)
 	int nextIdx = find_sector_index(x, y);
 
 	if (preIdx != nextIdx) {
+		g_sectors[preIdx]->s_lock.lock();
 		g_sectors[preIdx]->removeClient(id);
+		g_sectors[preIdx]->s_lock.unlock();
+
+		g_sectors[nextIdx]->s_lock.lock();
 		g_sectors[nextIdx]->insertClient(id);
+		g_sectors[nextIdx]->s_lock.unlock();
 	}
 
 	g_clients[id].x = x;
@@ -202,11 +204,13 @@ void process_move(int id, char dir)
 	send_move_packet(id, id);
 
 	unordered_set <int> new_viewlist;
-	for (auto i = g_sectors[nextIdx]->clientList.begin(); i != g_sectors[nextIdx]->clientList.end(); ++i) {
-		if (id == *i) continue;
-		if (false == g_clients[*i].in_use) continue;
-		if (true == is_near(id, *i)) new_viewlist.insert(*i);
-	}
+	//g_sectors[nextIdx]->s_lock.lock();
+	//for (auto i = g_sectors[nextIdx]->clientList.begin(); i != g_sectors[nextIdx]->clientList.end(); ++i) {
+	//	if (id == *i) continue;
+	//	if (false == g_clients[*i].in_use) continue;
+	//	if (true == is_near(id, *i)) new_viewlist.insert(*i);
+	//}
+	//g_sectors[nextIdx]->s_lock.unlock();
 
 	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 		if (true == is_near(id, i)) new_viewlist.insert(i);
@@ -216,12 +220,16 @@ void process_move(int id, char dir)
 	// 시야에 들어온 객체 처리
 	for (int ob : new_viewlist) {
 		if (0 == old_viewlist.count(ob)) {
+			g_clients[id].vl.lock();
 			g_clients[id].view_list.insert(ob);
+			g_clients[id].vl.unlock();
 			send_enter_packet(id, ob);
 
 			if (false == is_npc(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) {
+					g_clients[ob].vl.lock();
 					g_clients[ob].view_list.insert(id);
+					g_clients[ob].vl.unlock();
 					send_enter_packet(ob, id);
 				}
 				else {
@@ -244,11 +252,15 @@ void process_move(int id, char dir)
 	}
 	for (int ob : old_viewlist) {
 		if (0 == new_viewlist.count(ob)) {
+			g_clients[id].vl.lock();
 			g_clients[id].view_list.erase(ob);
+			g_clients[id].vl.unlock();
 			send_leave_packet(id, ob);
 			if (false == is_npc(ob)) {
 				if (0 != g_clients[ob].view_list.count(id)) {
+					g_clients[ob].vl.lock();
 					g_clients[ob].view_list.erase(id);
+					g_clients[ob].vl.unlock();
 					send_leave_packet(ob, id);
 				}
 			}
@@ -268,25 +280,23 @@ void process_packet(int id)
 		send_login_ok(id);
 
 		//add to sector view list
-		for (auto& s : g_sectors) {
-			if (s->isInSector(id)) {
-				for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
-					if (true == g_clients[*i].in_use)
-						if (id != *i) {
-							if (false == is_near(*i, id)) continue;
-							if (0 == g_clients[*i].view_list.count(id)) {
-								g_clients[*i].view_list.insert(id);
-								send_enter_packet(*i, id);
-							}
-							if (0 == g_clients[id].view_list.count(*i)) {
-								g_clients[id].view_list.insert(*i);
-								send_enter_packet(id, *i);
-							}
-						}
-				}
-				break;
-			}
-		}
+		int sectorIdx = find_sector_index(g_clients[id].x, g_clients[id].y);
+		//g_sectors[sectorIdx]->s_lock.lock();
+		//for (auto i = g_sectors[sectorIdx]->clientList.begin(); i != g_sectors[sectorIdx]->clientList.end(); ++i) {
+		//	if (true == g_clients[*i].in_use)
+		//		if (id != *i) {
+		//			if (false == is_near(*i, id)) continue;
+		//			if (0 == g_clients[*i].view_list.count(id)) {
+		//				g_clients[*i].view_list.insert(id);
+		//				send_enter_packet(*i, id);
+		//			}
+		//			if (0 == g_clients[id].view_list.count(*i)) {
+		//				g_clients[id].view_list.insert(*i);
+		//				send_enter_packet(id, *i);
+		//			}
+		//		}
+		//}
+		//g_sectors[sectorIdx]->s_lock.unlock();
 
 		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 			if (false == is_near(id, i)) continue;
@@ -375,12 +385,10 @@ void add_new_client(SOCKET ns)
 		g_clients[i].y = rand() % WORLD_HEIGHT;
 
 		//add to sector
-		for (auto& s : g_sectors) {
-			if (s->isInSector(g_clients[i].x, g_clients[i].y)) {
-				s->insertClient(i);
-				break;
-			}
-		}
+		int idx = find_sector_index(g_clients[i].x, g_clients[i].y);
+		//g_sectors[idx]->s_lock.lock();
+		//g_sectors[idx]->insertClient(i);
+		//g_sectors[idx]->s_lock.unlock();
 
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0);
 		DWORD flags = 0;
@@ -407,18 +415,16 @@ void add_new_client(SOCKET ns)
 void disconnect_client(int id)
 {
 	//remove in sector
-	for (auto& s : g_sectors) {
-		if (s->isInSector(id)) {
-			s->removeClient(id);
-			for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
-				if (0 != g_clients[*i].view_list.count(id)) {
-					g_clients[*i].view_list.erase(id);
-					send_leave_packet(*i, id);
-				}
-			}
-			break;
-		}
-	}
+	int idx = find_sector_index(g_clients[id].x, g_clients[id].y);
+	//g_sectors[idx]->s_lock.lock();
+	//g_sectors[idx]->removeClient(id);
+	//for (auto i = g_sectors[idx]->clientList.begin(); i != g_sectors[idx]->clientList.end(); ++i) {
+	//	if (0 != g_clients[*i].view_list.count(id)) {
+	//		g_clients[*i].view_list.erase(id);
+	//		send_leave_packet(*i, id);
+	//	}
+	//}
+	//g_sectors[idx]->s_lock.unlock();
 
 	g_clients[id].c_lock.lock();
 	g_clients[id].in_use = false;
@@ -473,6 +479,12 @@ void initialize_NPC()
 	{
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
+
+		int idx = find_sector_index(g_clients[i].x, g_clients[i].y);
+		//g_sectors[idx]->s_lock.lock();
+		//g_sectors[idx]->insertClient(i);
+		//g_sectors[idx]->s_lock.unlock();
+
 		char npc_name[50];
 		sprintf_s(npc_name, "N%d", i);
 		strcpy_s(g_clients[i].name, npc_name);
@@ -484,12 +496,18 @@ void initialize_NPC()
 void random_move_npc(int id)
 {
 	unordered_set <int> old_viewlist;
-	for (int i = 0; i < MAX_USER; ++i) {
-		if (false == g_clients[i].in_use) continue;
-		if (true == is_near(id, i)) old_viewlist.insert(i);
-	}
+
 	int x = g_clients[id].x;
 	int y = g_clients[id].y;
+	int idx = find_sector_index(x, y);
+
+	//g_sectors[idx]->s_lock.lock();
+	//for (auto i = g_sectors[idx]->clientList.begin(); i != g_sectors[idx]->clientList.end(); ++i) {
+	//	if (false == g_clients[*i].in_use)continue;
+	//	if (true == is_near(id, *i)) old_viewlist.insert(*i);
+	//}
+	//g_sectors[idx]->s_lock.unlock();
+
 	switch (rand() % 4)
 	{
 	case 0: if (x > 0) x--; break;
@@ -499,16 +517,18 @@ void random_move_npc(int id)
 	}
 	g_clients[id].x = x;
 	g_clients[id].y = y;
+
 	unordered_set <int> new_viewlist;
-	for (auto& s : g_sectors) {
-		if (s->isInSector(id)) {
-			for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
-				if (id == *i) continue;
-				if (false == g_clients[*i].in_use) continue;
-				if (true == is_near(id, *i)) new_viewlist.insert(*i);
-			}
-		}
-	}
+
+	idx = find_sector_index(x, y);
+
+	//g_sectors[idx]->s_lock.lock();
+	//for (auto i = g_sectors[idx]->clientList.begin(); i != g_sectors[idx]->clientList.end(); ++i) {
+	//	if (id == *i) continue;
+	//	if (false == g_clients[*i].in_use) continue;
+	//	if (true == is_near(id, *i)) new_viewlist.insert(*i);
+	//}
+	//g_sectors[idx]->s_lock.unlock();
 
 	for (auto pl : old_viewlist) {
 		if (0 < new_viewlist.count(pl)) {
@@ -538,7 +558,6 @@ void random_move_npc(int id)
 				send_move_packet(pl, id);
 		}
 	}
-
 }
 
 void npc_ai_thread()
@@ -562,7 +581,7 @@ int main()
 		cl.in_use = false;
 	for (int i = 0; i < VIEW_LIMIT; ++i) {
 		for (int j = 0; j < VIEW_LIMIT; ++j) {
-			g_sectors.emplace_back(new Sector(SECTOR_WIDTH * i, SECTOR_HEIGHT * j, SECTOR_WIDTH, SECTOR_HEIGHT));
+			g_sectors.emplace_back(new Sector);
 		}
 	}
 
@@ -586,11 +605,15 @@ int main()
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(&g_accept_over.wsa_over));
 	AcceptEx(g_lSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
 
+	initialize_NPC();
+
+	thread timer_thread{ time_worker };
 	vector <thread> worker_threads;
 	for (int i = 0; i < 6; ++i)
 		worker_threads.emplace_back(worker_thread);
 	for (auto& th : worker_threads)
 		th.join();
+	timer_thread.join();
 
 	for (auto& s : g_sectors)
 		delete s;
