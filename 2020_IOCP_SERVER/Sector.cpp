@@ -32,14 +32,14 @@ bool Sector::isInSector(int x, int y)
 
 void Sector::insertClient(int id)
 {
-	s_lock.lock();
+	//s_lock.lock();
 	clientList.insert(id);
-	s_lock.unlock();
+	//s_lock.unlock();
 }
 
 void Sector::removeClient(int id)
 {
-	s_lock.lock();
+	//s_lock.lock();
 	clientList.erase(id);
-	s_lock.unlock();
+	//s_lock.unlock();
 }

@@ -6,11 +6,16 @@
 #include <vector>
 #include <mutex>
 #include <unordered_set>
+#include<queue>
 #include"protocol.h"
+
+#pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "MSWSock.lib")
 
 constexpr int MAX_BUFFER = 4096;
 
 using namespace std;
+using namespace chrono;
 
 struct OVER_EX {
 	WSAOVERLAPPED wsa_over;
@@ -25,13 +30,14 @@ struct client_info {
 	short x, y;
 
 	bool in_use;
+	bool is_active;
 	SOCKET	m_sock;
 	OVER_EX	m_recv_over;
 	unsigned char* m_packet_start;
 	unsigned char* m_recv_start;
 
 	mutex vl;
-	unordered_set<int> view_list;
+	unordered_set <int> view_list;
 
 	int move_time;
 };
@@ -39,10 +45,9 @@ struct client_info {
 class Sector
 {
 	RECT rect;
-	unordered_set<int> clientList;
-
-	mutex s_lock;
 public:
+	unordered_set<int> clientList;
+	mutex s_lock;
 	Sector(int x, int y, int w, int h);
 	virtual ~Sector();
 	bool isInSector(int idx);

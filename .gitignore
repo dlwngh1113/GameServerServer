@@ -2,6 +2,7 @@
 */.vs
 */release
 */Debug
+.vs/
 *.exe
 *.suo
 *.db

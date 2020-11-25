@@ -1,22 +1,74 @@
 #include"Sector.h"
 
-using namespace std;
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "MSWSock.lib")
-
 constexpr char OP_MODE_RECV = 0;
 constexpr char OP_MODE_SEND = 1;
 constexpr char OP_MODE_ACCEPT = 2;
+constexpr char OP_RANDOM_MOVE = 3;
 
 constexpr int  KEY_SERVER = 1000000;
 
 mutex id_lock;
-client_info g_clients[MAX_USER];
+client_info g_clients[MAX_USER + NUM_NPC];
 HANDLE		h_iocp;
 
 SOCKET g_lSocket;
 OVER_EX g_accept_over;
+
 vector<Sector*> g_sectors;
+
+
+struct event_type {
+	int obj_id;
+	system_clock::time_point wakeup_time;
+	int event_id;
+	int target_id;
+
+	constexpr bool operator < (const event_type& _Left) const
+	{
+		return (wakeup_time > _Left.wakeup_time);
+	}
+};
+
+priority_queue<event_type> timer_queue;
+mutex timer_l;
+
+void add_timer(int obj_id, int ev_type, system_clock::time_point t)
+{
+	event_type ev{ obj_id, t, ev_type };
+	timer_l.lock();
+	timer_queue.push(ev);
+	timer_l.unlock();
+}
+
+void random_move_npc(int id);
+
+void time_worker()
+{
+	while (true) {
+		while (true) {
+			if (false == timer_queue.empty()) {
+				event_type ev = timer_queue.top();
+				if (ev.wakeup_time > system_clock::now()) break;
+				timer_queue.pop();
+
+				if (ev.event_id == OP_RANDOM_MOVE) {
+					random_move_npc(ev.obj_id);
+					add_timer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+				}
+			}
+			else break;
+		}
+		this_thread::sleep_for(1ms);
+	}
+}
+
+void wake_up_npc(int id)
+{
+	if (false == g_clients[id].is_active) {
+		g_clients[id].is_active = true;  // CAS로 구현해서 이중 활성화를 막아야 한다.
+		add_timer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+	}
+}
 
 void error_display(const char* msg, int err_no)
 {
@@ -31,6 +83,11 @@ void error_display(const char* msg, int err_no)
 	std::wcout << L"에러 " << lpMsgBuf << std::endl;
 	while (true);
 	LocalFree(lpMsgBuf);
+}
+
+bool is_npc(int p1)
+{
+	return p1 >= MAX_USER;
 }
 
 bool is_near(int p1, int p2)
@@ -107,10 +164,21 @@ void send_leave_packet(int to_client, int new_id)
 	send_packet(to_client, &p);
 }
 
+int find_sector_index(int x, int y)
+{
+	for (int i = 0; i < VIEW_LIMIT * VIEW_LIMIT; ++i)
+		if (g_sectors[i]->isInSector(x, y))
+			return i;
+	return -1;
+}
+
 void process_move(int id, char dir)
 {
 	short y = g_clients[id].y;
 	short x = g_clients[id].x;
+
+	int preIdx = find_sector_index(x, y);
+
 	switch (dir) {
 	case MV_UP: if (y > 0) y--; break;
 	case MV_DOWN: if (y < (WORLD_HEIGHT - 1)) y++; break;
@@ -121,16 +189,28 @@ void process_move(int id, char dir)
 	}
 	unordered_set <int> old_viewlist = g_clients[id].view_list;
 
+	int nextIdx = find_sector_index(x, y);
+
+	if (preIdx != nextIdx) {
+		g_sectors[preIdx]->removeClient(id);
+		g_sectors[nextIdx]->insertClient(id);
+	}
+
 	g_clients[id].x = x;
 	g_clients[id].y = y;
 
 	send_move_packet(id, id);
 
 	unordered_set <int> new_viewlist;
-	for (int i = 0; i < MAX_USER; ++i) {
-		if (id == i) continue;
-		if (false == g_clients[i].in_use) continue;
+	for (auto i = g_sectors[nextIdx]->clientList.begin(); i != g_sectors[nextIdx]->clientList.end(); ++i) {
+		if (id == *i) continue;
+		if (false == g_clients[*i].in_use) continue;
+		if (true == is_near(id, *i)) new_viewlist.insert(*i);
+	}
+
+	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 		if (true == is_near(id, i)) new_viewlist.insert(i);
+		wake_up_npc(i);
 	}
 
 	// 시야에 들어온 객체 처리
@@ -139,22 +219,26 @@ void process_move(int id, char dir)
 			g_clients[id].view_list.insert(ob);
 			send_enter_packet(id, ob);
 
-			if (0 == g_clients[ob].view_list.count(id)) {
-				g_clients[ob].view_list.insert(id);
-				send_enter_packet(ob, id);
-			}
-			else {
-				send_move_packet(ob, id);
+			if (false == is_npc(ob)) {
+				if (0 == g_clients[ob].view_list.count(id)) {
+					g_clients[ob].view_list.insert(id);
+					send_enter_packet(ob, id);
+				}
+				else {
+					send_move_packet(ob, id);
+				}
 			}
 		}
 		else {  // 이전에도 시야에 있었고, 이동후에도 시야에 있는 객체
-			if (0 != g_clients[ob].view_list.count(id)) {
-				send_move_packet(ob, id);
-			}
-			else
-			{
-				g_clients[ob].view_list.insert(id);
-				send_enter_packet(ob, id);
+			if (false == is_npc(ob)) {
+				if (0 != g_clients[ob].view_list.count(id)) {
+					send_move_packet(ob, id);
+				}
+				else
+				{
+					g_clients[ob].view_list.insert(id);
+					send_enter_packet(ob, id);
+				}
 			}
 		}
 	}
@@ -162,9 +246,11 @@ void process_move(int id, char dir)
 		if (0 == new_viewlist.count(ob)) {
 			g_clients[id].view_list.erase(ob);
 			send_leave_packet(id, ob);
-			if (0 != g_clients[ob].view_list.count(id)) {
-				g_clients[ob].view_list.erase(id);
-				send_leave_packet(ob, id);
+			if (false == is_npc(ob)) {
+				if (0 != g_clients[ob].view_list.count(id)) {
+					g_clients[ob].view_list.erase(id);
+					send_leave_packet(ob, id);
+				}
 			}
 		}
 	}
@@ -181,26 +267,33 @@ void process_packet(int id)
 		g_clients[id].c_lock.unlock();
 		send_login_ok(id);
 
-		//add to sector, 
+		//add to sector view list
 		for (auto& s : g_sectors) {
-			if (s->isInSector(g_clients[id].x, g_clients[id].y)) {
-				s->insertClient(id);
+			if (s->isInSector(id)) {
+				for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
+					if (true == g_clients[*i].in_use)
+						if (id != *i) {
+							if (false == is_near(*i, id)) continue;
+							if (0 == g_clients[*i].view_list.count(id)) {
+								g_clients[*i].view_list.insert(id);
+								send_enter_packet(*i, id);
+							}
+							if (0 == g_clients[id].view_list.count(*i)) {
+								g_clients[id].view_list.insert(*i);
+								send_enter_packet(id, *i);
+							}
+						}
+				}
 				break;
 			}
 		}
-		for (int i = 0; i < MAX_USER; ++i)
-			if (true == g_clients[i].in_use)
-				if (id != i) {
-					if (false == is_near(i, id)) continue;
-					if (0 == g_clients[i].view_list.count(id)) {
-						g_clients[i].view_list.insert(id);
-						send_enter_packet(i, id);
-					}
-					if (0 == g_clients[id].view_list.count(i)) {
-						g_clients[id].view_list.insert(i);
-						send_enter_packet(id, i);
-					}
-				}
+
+		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
+			if (false == is_near(id, i)) continue;
+			g_clients[id].view_list.insert(i);
+			send_enter_packet(id, i);
+			wake_up_npc(i);
+		}
 		break;
 	}
 	case CS_MOVE: {
@@ -263,7 +356,7 @@ void add_new_client(SOCKET ns)
 		closesocket(ns);
 	}
 	else {
-		cout << "New Client [" << i << "] Accepted" << endl;
+		// cout << "New Client [" << i << "] Accepted" << endl;
 		g_clients[i].c_lock.lock();
 		g_clients[i].in_use = true;
 		g_clients[i].m_sock = ns;
@@ -313,29 +406,26 @@ void add_new_client(SOCKET ns)
 
 void disconnect_client(int id)
 {
-	for (int i = 0; i < MAX_USER; ++i) {
-		if (true == g_clients[i].in_use)
-			if (i != id) {
-				if (0 != g_clients[i].view_list.count(id)) {
-					g_clients[i].view_list.erase(id);
-					send_leave_packet(i, id);
+	//remove in sector
+	for (auto& s : g_sectors) {
+		if (s->isInSector(id)) {
+			s->removeClient(id);
+			for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
+				if (0 != g_clients[*i].view_list.count(id)) {
+					g_clients[*i].view_list.erase(id);
+					send_leave_packet(*i, id);
 				}
 			}
+			break;
+		}
 	}
+
 	g_clients[id].c_lock.lock();
 	g_clients[id].in_use = false;
 	g_clients[id].view_list.clear();
 	closesocket(g_clients[id].m_sock);
 	g_clients[id].m_sock = 0;
 	g_clients[id].c_lock.unlock();
-
-	//remove in sector
-	for (auto& s : g_sectors) {
-		if (s->isInSector(id)) {
-			s->removeClient(id);
-			break;
-		}
-	}
 }
 
 void worker_thread()
@@ -351,7 +441,7 @@ void worker_thread()
 		WSAOVERLAPPED* lpover;
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
 		key = static_cast<int>(iocp_key);
-		cout << "Completion Detected" << endl;
+		// cout << "Completion Detected" << endl;
 		if (FALSE == ret) {
 			error_display("GQCS Error : ", WSAGetLastError());
 		}
@@ -365,7 +455,7 @@ void worker_thread()
 			if (0 == io_size)
 				disconnect_client(key);
 			else {
-				cout << "Packet from Client [" << key << "]" << endl;
+				// cout << "Packet from Client [" << key << "]" << endl;
 				process_recv(key, io_size);
 			}
 			break;
@@ -376,10 +466,96 @@ void worker_thread()
 	}
 }
 
+void initialize_NPC()
+{
+	cout << "Initializing NPCs\n";
+	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i)
+	{
+		g_clients[i].x = rand() % WORLD_WIDTH;
+		g_clients[i].y = rand() % WORLD_HEIGHT;
+		char npc_name[50];
+		sprintf_s(npc_name, "N%d", i);
+		strcpy_s(g_clients[i].name, npc_name);
+		g_clients[i].is_active = false;
+	}
+	cout << "NPC initialize finished.\n";
+}
+
+void random_move_npc(int id)
+{
+	unordered_set <int> old_viewlist;
+	for (int i = 0; i < MAX_USER; ++i) {
+		if (false == g_clients[i].in_use) continue;
+		if (true == is_near(id, i)) old_viewlist.insert(i);
+	}
+	int x = g_clients[id].x;
+	int y = g_clients[id].y;
+	switch (rand() % 4)
+	{
+	case 0: if (x > 0) x--; break;
+	case 1: if (x < (WORLD_WIDTH - 1)) x++; break;
+	case 2: if (y > 0) y--; break;
+	case 3: if (y < (WORLD_HEIGHT - 1)) y++; break;
+	}
+	g_clients[id].x = x;
+	g_clients[id].y = y;
+	unordered_set <int> new_viewlist;
+	for (auto& s : g_sectors) {
+		if (s->isInSector(id)) {
+			for (auto i = s->clientList.begin(); i != s->clientList.end(); ++i) {
+				if (id == *i) continue;
+				if (false == g_clients[*i].in_use) continue;
+				if (true == is_near(id, *i)) new_viewlist.insert(*i);
+			}
+		}
+	}
+
+	for (auto pl : old_viewlist) {
+		if (0 < new_viewlist.count(pl)) {
+			if (0 < g_clients[pl].view_list.count(id))
+				send_move_packet(pl, id);
+			else {
+				g_clients[pl].view_list.insert(id);
+				send_enter_packet(pl, id);
+			}
+		}
+		else
+		{
+			if (0 < g_clients[pl].view_list.count(id)) {
+				g_clients[pl].view_list.erase(id);
+				send_leave_packet(pl, id);
+			}
+		}
+	}
+
+	for (auto pl : new_viewlist) {
+		if (0 == g_clients[pl].view_list.count(pl)) {
+			if (0 == g_clients[pl].view_list.count(id)) {
+				g_clients[pl].view_list.insert(id);
+				send_enter_packet(pl, id);
+			}
+			else
+				send_move_packet(pl, id);
+		}
+	}
+
+}
+
+void npc_ai_thread()
+{
+	while (true) {
+		auto start_time = system_clock::now();
+		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i)
+			random_move_npc(i);
+		auto end_time = system_clock::now();
+		auto exec_time = end_time - start_time;
+		cout << "AI exec time = " << duration_cast<seconds>(exec_time).count() << "s\n";
+		this_thread::sleep_for(1s - (end_time - start_time));
+	}
+}
 
 int main()
 {
-
 	std::wcout.imbue(std::locale("korean"));
 
 	for (auto& cl : g_clients)

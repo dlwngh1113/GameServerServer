@@ -3,10 +3,11 @@
 constexpr int SERVER_PORT = 3500;
 constexpr int MAX_ID_LEN = 10;
 constexpr int MAX_USER = 10000;
-constexpr int WORLD_WIDTH = 400;
-constexpr int WORLD_HEIGHT = 400;
+constexpr int WORLD_WIDTH = 2000;
+constexpr int WORLD_HEIGHT = 2000;
 constexpr int MAX_STR_LEN = 100;
-constexpr int VIEW_LIMIT = 5;
+constexpr int VIEW_LIMIT = 8;
+constexpr int NUM_NPC = 200'000;
 
 constexpr auto SECTOR_WIDTH = WORLD_WIDTH / VIEW_LIMIT;
 constexpr auto SECTOR_HEIGHT = WORLD_HEIGHT / VIEW_LIMIT;
