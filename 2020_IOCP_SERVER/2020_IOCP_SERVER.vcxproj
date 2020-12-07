@@ -140,11 +140,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="iocp_server.cpp" />
-    <ClCompile Include="Sector.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\lauxlib.h" />
+    <ClInclude Include="include\lua.h" />
+    <ClInclude Include="include\lualib.h" />
     <ClInclude Include="protocol.h" />
-    <ClInclude Include="Sector.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="monster.lua" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

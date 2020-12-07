@@ -13,12 +13,12 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="헤더 파일\lua">
+      <UniqueIdentifier>{83efb508-dba7-4716-b9d7-14405138aa42}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="iocp_server.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
-    <ClCompile Include="Sector.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
@@ -26,8 +26,19 @@
     <ClInclude Include="protocol.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="Sector.h">
-      <Filter>헤더 파일</Filter>
+    <ClInclude Include="include\lauxlib.h">
+      <Filter>헤더 파일\lua</Filter>
     </ClInclude>
+    <ClInclude Include="include\lua.h">
+      <Filter>헤더 파일\lua</Filter>
+    </ClInclude>
+    <ClInclude Include="include\lualib.h">
+      <Filter>헤더 파일\lua</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="monster.lua">
+      <Filter>리소스 파일</Filter>
+    </None>
   </ItemGroup>
 </Project>

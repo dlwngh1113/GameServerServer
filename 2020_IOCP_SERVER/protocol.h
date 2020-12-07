@@ -18,6 +18,7 @@ constexpr char SC_PACKET_LOGIN_OK = 0;
 constexpr char SC_PACKET_MOVE = 1;
 constexpr char SC_PACKET_ENTER = 2;
 constexpr char SC_PACKET_LEAVE = 3;
+constexpr char SC_PACKET_CHAT = 4;
 
 constexpr char CS_LOGIN = 0;
 constexpr char CS_MOVE = 1;
@@ -53,6 +54,13 @@ struct sc_packet_leave {
 	char size;
 	char type;
 	int  id;
+};
+
+struct sc_packet_chat {
+	char size;
+	char type;
+	int  id;
+	char message[MAX_STR_LEN];
 };
 
 struct cs_packet_login {
