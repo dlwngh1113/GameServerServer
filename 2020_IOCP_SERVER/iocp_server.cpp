@@ -7,6 +7,10 @@
 #include <unordered_set>
 #include <chrono>
 #include <queue>
+#include<string>
+#include <windows.h>  
+#include <stdio.h>  
+#include <sqlext.h>
 
 extern "C" {
 #include "include/lua.h"
@@ -20,6 +24,7 @@ using namespace chrono;
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "MSWSock.lib")
 #pragma comment(lib, "lua54.lib")
+#pragma commint(lib, "odbc32")
 
 constexpr int MAX_BUFFER = 4096;
 
@@ -43,7 +48,10 @@ struct OVER_EX {
 struct client_info {
 	mutex c_lock;
 	char name[MAX_ID_LEN];
+	short level;
+	short hp;
 	short x, y;
+	int exp;
 	lua_State* L;
 
 	bool in_use;
@@ -65,6 +73,11 @@ HANDLE		h_iocp;
 
 SOCKET g_lSocket;
 OVER_EX g_accept_over;
+
+SQLHENV henv;
+SQLHDBC hdbc;
+SQLHSTMT hstmt = 0;
+SQLRETURN dbRetcode;
 
 struct event_type {
 	int obj_id;
@@ -92,6 +105,7 @@ void add_timer(int obj_id, int ev_type, system_clock::time_point t, int target_i
 
 void random_move_npc(int id);
 void send_chat_packet(int to_client, int id, char* mess);
+void disconnect_client(int id);
 
 void time_worker()
 {
@@ -195,10 +209,10 @@ void send_chat_packet(int to_client, int id, char *mess)
 void send_login_ok(int id)
 {
 	sc_packet_login_ok p;
-	p.exp = 0;
-	p.hp = 100;
+	p.exp = g_clients[id].exp;
+	p.hp = g_clients[id].hp;
 	p.id = id;
-	p.level = 1;
+	p.level = g_clients[id].level;
 	p.size = sizeof(p);
 	p.type = SC_PACKET_LOGIN_OK;
 	p.x = g_clients[id].x;
@@ -336,17 +350,106 @@ void process_move(int id, char dir)
 	}
 }
 
+void get_userdata(cs_packet_login* p, int id)
+{
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+	char getQuery[MAX_STR_LEN] = { NULL };
+	sprintf_s(getQuery, "EXEC get_userdata %s", p->name);
+
+	int nChars = MultiByteToWideChar(CP_ACP, 0, getQuery, -1, NULL, 0);
+	wchar_t* pwcsName = new wchar_t[nChars];
+	MultiByteToWideChar(CP_ACP, 0, getQuery, -1, (LPWSTR)pwcsName, nChars);
+
+	dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)pwcsName, SQL_NTS);
+
+	if (dbRetcode == SQL_SUCCESS || dbRetcode == SQL_SUCCESS_WITH_INFO) {
+		SQLINTEGER LEVEL, EXP;
+		SQLSMALLINT POSX, POSY, HP;
+		SQLLEN cbLevel, cbExp, cbPosX, cbPosY, cbHp;
+		// Bind columns 1, 2, and 3  
+		dbRetcode = SQLBindCol(hstmt, 1, SQL_C_LONG, &LEVEL, 100, &cbLevel);
+		dbRetcode = SQLBindCol(hstmt, 2, SQL_C_SHORT, &POSX, 100, &cbPosX);
+		dbRetcode = SQLBindCol(hstmt, 3, SQL_C_SHORT, &POSY, 100, &cbPosY);
+		dbRetcode = SQLBindCol(hstmt, 4, SQL_C_LONG, &EXP, 100, &cbExp);
+		dbRetcode = SQLBindCol(hstmt, 5, SQL_C_LONG, &HP, 100, &cbHp);
+
+		dbRetcode = SQLFetch(hstmt);
+		if (dbRetcode == SQL_ERROR || dbRetcode == SQL_SUCCESS_WITH_INFO)
+			cout << "code line 743 error\n";
+		if (dbRetcode == SQL_SUCCESS || dbRetcode == SQL_SUCCESS_WITH_INFO)
+		{
+			g_clients[id].c_lock.lock();
+			strcpy_s(g_clients[id].name, p->name);
+			g_clients[id].c_lock.unlock();
+
+			g_clients[id].level = LEVEL;
+			g_clients[id].x = POSX;
+			g_clients[id].y = POSY;
+			g_clients[id].exp = EXP;
+			g_clients[id].hp = HP;
+			//printf("user[%s] level - %d, x - %hd, y - %hd, exp - %d\n",
+			//	g_clients[id].name, g_clients[id].level, g_clients[id].x, g_clients[id].y, g_clients[id].exp);
+		}
+	}
+
+	delete[] pwcsName;
+}
+
+void set_userdata(int id, bool isInit)
+{
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+	wchar_t tmp[MAX_STR_LEN] = { NULL };
+
+	int nChars = MultiByteToWideChar(CP_ACP, 0, g_clients[id].name, -1, NULL, 0);
+	wchar_t* nameWchar = new wchar_t[nChars];
+	MultiByteToWideChar(CP_ACP, 0, g_clients[id].name, -1, (LPWSTR)nameWchar, nChars);
+
+	if (isInit) {
+		g_clients[id].level = 1;
+		g_clients[id].x = 0;
+		g_clients[id].y = 0;
+		g_clients[id].exp = 0;
+		g_clients[id].hp = 100;
+		wsprintf(tmp, L"EXEC insert_player %s",	nameWchar);
+
+		dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
+
+		return;
+	}
+
+	//이름, 레벨, x, y, exp
+	wsprintf(tmp, L"EXEC set_userdata %s, %d, %hd, %hd, %d, %hd",
+		nameWchar,
+		g_clients[id].level,
+		g_clients[id].x,
+		g_clients[id].y,
+		g_clients[id].exp,
+		g_clients[id].hp);
+	for (int i = 0; i < lstrlenW(tmp); ++i)
+		wcout << tmp[i];
+	cout << endl;
+
+	dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
+
+	delete[] nameWchar;
+}
+
 void process_packet(int id)
 {
 	char p_type = g_clients[id].m_packet_start[1];
 	switch (p_type) {
-	case CS_LOGIN: {
+	case CS_LOGIN:
+	{
 		cs_packet_login* p = reinterpret_cast<cs_packet_login *>(g_clients[id].m_packet_start);
-		g_clients[id].c_lock.lock();
+
 		strcpy_s(g_clients[id].name, p->name);
-		g_clients[id].c_lock.unlock();
+		set_userdata(id, true);
+
+		if(dbRetcode != SQL_SUCCESS && dbRetcode != SQL_SUCCESS_WITH_INFO)
+			get_userdata(p, id);
+
 		send_login_ok(id);
-		for (int i = 0; i< MAX_USER; ++i)
+		for (int i = 0; i < MAX_USER; ++i)
 			if (true == g_clients[i].in_use)
 				if (id != i) {
 					if (false == is_near(i, id)) continue;
@@ -377,8 +480,13 @@ void process_packet(int id)
 		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
 		g_clients[id].move_time = p->move_time;
 		process_move(id, p->direction);
-		break;
 	}
+		break;
+	case CS_LOGOUT:
+	{
+		disconnect_client(id);
+	}
+	break;
 	default: cout << "Unknown Packet type [" << p_type << "] from Client [" << id << "]\n";
 		while (true);
 	}
@@ -484,6 +592,7 @@ void disconnect_client(int id)
 			}
 	}
 	g_clients[id].c_lock.lock();
+	set_userdata(id, false);
 	g_clients[id].in_use = false;
 	g_clients[id].view_list.clear();
 	closesocket(g_clients[id].m_sock);
@@ -701,6 +810,12 @@ int main()
 	for (auto& cl : g_clients)
 		cl.in_use = false;
 
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv);
+	dbRetcode = SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER*)SQL_OV_ODBC3, 0);
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
+	SQLSetConnectAttr(hdbc, SQL_LOGIN_TIMEOUT, (SQLPOINTER)5, 0);
+	dbRetcode = SQLConnect(hdbc, (SQLWCHAR*)L"g_server_1", SQL_NTS, (SQLWCHAR*)NULL, 0, NULL, 0);
+
 	WSADATA WSAData;
 	WSAStartup(MAKEWORD(2, 0), &WSAData);
 	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
@@ -733,6 +848,11 @@ int main()
 	//ai_thread.join();
 	timer_thread.join();
 
+	SQLCancel(hstmt);
+	SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+	SQLDisconnect(hdbc);
+	SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+	SQLFreeHandle(SQL_HANDLE_ENV, henv);
 	closesocket(g_lSocket);
 	WSACleanup();
 }
