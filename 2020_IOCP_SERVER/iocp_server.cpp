@@ -135,7 +135,19 @@ void time_worker()
 					break;
 				case OP_REVIVAL:
 				{
-					wake_up_npc(ev.obj_id);
+					g_clients[ev.obj_id].level = rand() % 10 + 1;
+					g_clients[ev.obj_id].hp = g_clients[ev.obj_id].level * 100;
+					for (int i = 0; i < MAX_USER; ++i) {
+						if (is_near(ev.obj_id, i) && g_clients[i].in_use) {
+							g_clients[i].vl.lock();
+							g_clients[i].view_list.insert(ev.obj_id);
+							send_enter_packet(i, ev.obj_id);
+							g_clients[i].vl.unlock();
+						}
+					}
+					OVER_EX* over_ex = new OVER_EX;
+					over_ex->op_mode = OP_RANDOM_MOVE;
+					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &over_ex->wsa_over);
 				}
 				break;
 				default:
@@ -485,7 +497,7 @@ void process_attack(int id)
 {
 	for (auto& i : g_clients[id].view_list)
 		if (isIn_atkRange(id, i)) {
-			if (i > MAX_USER) {
+			if (is_npc(i)) {
 				g_clients[i].hp -= 100;
 				char mess[MAX_STR_LEN];
 				sprintf_s(mess, "%s had %d damage. %d left",
@@ -493,8 +505,8 @@ void process_attack(int id)
 				send_chat_packet(id, id, mess);
 
 				if (g_clients[i].hp <= 0) {
-					g_clients[i].in_use = false;
-					add_timer(i, OP_REVIVAL, system_clock::now() + 29s);
+					add_timer(i, OP_REVIVAL, system_clock::now() + 10s);
+					send_leave_packet(id, i);
 					process_status(id, i);
 					sprintf_s(mess, "%s has dead, %d exp gain",
 						g_clients[i].name, g_clients[i].level * 10);
@@ -723,7 +735,8 @@ void worker_thread()
 			delete over_ex;
 			break;
 		case OP_RANDOM_MOVE:
-			random_move_npc(key);
+			if(g_clients[key].hp > 0)
+				random_move_npc(key);
 			delete over_ex;
 			break;
 		case OP_PLAYER_MOVE_NOTIFY:
@@ -787,7 +800,7 @@ void initialize_NPC()
 	{
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
-		g_clients[i].level = rand() % 10;
+		g_clients[i].level = rand() % 10 + 1;
 		g_clients[i].hp = g_clients[i].level * 100;
 		char npc_name[50];
 		sprintf_s(npc_name, "N%d", i);
@@ -887,7 +900,8 @@ void npc_ai_thread()
 	while (true) {
 		auto start_time = system_clock::now();
 		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i)
-			random_move_npc(i);
+			if(g_clients[i].hp > 0)
+				random_move_npc(i);
 		auto end_time = system_clock::now();
 		auto exec_time = end_time - start_time;
 		cout << "AI exec time = " << duration_cast<seconds>(exec_time).count() << "s\n";
