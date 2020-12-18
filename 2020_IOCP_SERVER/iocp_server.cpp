@@ -18,7 +18,7 @@ extern "C" {
 #include "include/lualib.h"
 }
 
-#include "protocol.h"
+#include"framework.h"
 using namespace std;
 using namespace chrono;
 #pragma comment(lib, "Ws2_32.lib")
@@ -34,6 +34,7 @@ constexpr char OP_MODE_ACCEPT = 2;
 constexpr char OP_RANDOM_MOVE = 3;
 constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
 constexpr char OP_RUNAWAY = 5;
+constexpr char OP_REVIVAL = 6;
 
 constexpr int  KEY_SERVER = 1000000;
 
@@ -65,6 +66,7 @@ struct client_info {
 	unordered_set <int> view_list;
 
 	int move_time;
+	int atk_time;
 };
 
 mutex id_lock;
@@ -103,17 +105,14 @@ void add_timer(int obj_id, int ev_type, system_clock::time_point t, int target_i
 	timer_l.unlock();
 }
 
-void random_move_npc(int id);
-void send_chat_packet(int to_client, int id, char* mess);
-void disconnect_client(int id);
-
 void time_worker()
 {
 	while (true) {
 		while (true) {
 			if (false == timer_queue.empty()) {
 				event_type ev = timer_queue.top();
-				if (ev.wakeup_time > system_clock::now()) break;
+				if (ev.wakeup_time > system_clock::now())
+					break;
 				timer_l.lock();
 				timer_queue.pop();
 				timer_l.unlock();
@@ -134,6 +133,11 @@ void time_worker()
 					send_chat_packet(ev.target_id, ev.obj_id, ev.message);
 				}
 					break;
+				case OP_REVIVAL:
+				{
+					wake_up_npc(ev.obj_id);
+				}
+				break;
 				default:
 					printf("Unknown event type: %c\n", ev.event_id);
 					break;
@@ -173,6 +177,7 @@ bool is_npc(int p1)
 {
 	return p1 >= MAX_USER;
 }
+
 bool is_near(int p1, int p2)
 {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
@@ -180,6 +185,7 @@ bool is_near(int p1, int p2)
 
 	return dist <= VIEW_LIMIT * VIEW_LIMIT;
 }
+
 void send_packet(int id, void* p)
 {
 	unsigned char* packet = reinterpret_cast<unsigned char *>(p);
@@ -220,6 +226,16 @@ void send_login_ok(int id)
 	send_packet(id, &p);
 }
 
+void send_login_fail(int id)
+{
+	sc_packet_login_fail p;
+	p.id = id;
+	p.size = sizeof(p);
+	p.type = SC_PACKET_LOGIN_OK;
+	strcpy_s(p.message, "another client is using this name");
+	send_packet(id, &p);
+}
+
 void send_move_packet(int to_client, int id)
 {
 	sc_packet_move p;
@@ -256,6 +272,17 @@ void send_leave_packet(int to_client, int new_id)
 	send_packet(to_client, &p);
 }
 
+void send_stat_change(int id)
+{
+	sc_packet_stat_change p;
+	p.level = g_clients[id].level;
+	p.exp = g_clients[id].exp;
+	p.hp = g_clients[id].hp;
+	p.type = SC_PACKET_STAT_CHANGE;
+	p.size = sizeof(p);
+	send_packet(id, &p);
+}
+
 void process_move(int id, char dir)
 {
 	short y = g_clients[id].y;
@@ -269,10 +296,10 @@ void process_move(int id, char dir)
 		while (true);
 	}
 	unordered_set <int> old_viewlist = g_clients[id].view_list;
-		
+
 	g_clients[id].x = x;
 	g_clients[id].y = y;
-
+	
 	send_move_packet(id, id);
 
 	unordered_set <int> new_viewlist;
@@ -375,7 +402,7 @@ void get_userdata(cs_packet_login* p, int id)
 
 		dbRetcode = SQLFetch(hstmt);
 		if (dbRetcode == SQL_ERROR || dbRetcode == SQL_SUCCESS_WITH_INFO)
-			cout << "code line 743 error\n";
+			cout << "code line 388 error\n";
 		if (dbRetcode == SQL_SUCCESS || dbRetcode == SQL_SUCCESS_WITH_INFO)
 		{
 			g_clients[id].c_lock.lock();
@@ -397,7 +424,6 @@ void get_userdata(cs_packet_login* p, int id)
 
 void set_userdata(int id, bool isInit)
 {
-	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 	wchar_t tmp[MAX_STR_LEN] = { NULL };
 
 	int nChars = MultiByteToWideChar(CP_ACP, 0, g_clients[id].name, -1, NULL, 0);
@@ -412,6 +438,7 @@ void set_userdata(int id, bool isInit)
 		g_clients[id].hp = 100;
 		wsprintf(tmp, L"EXEC insert_player %s",	nameWchar);
 
+		dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 		dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
 
 		return;
@@ -429,9 +456,51 @@ void set_userdata(int id, bool isInit)
 		wcout << tmp[i];
 	cout << endl;
 
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 	dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
 
 	delete[] nameWchar;
+}
+
+bool isIn_atkRange(int p1, int p2)
+{
+	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
+	dist += (g_clients[p1].y - g_clients[p2].y) * (g_clients[p1].y - g_clients[p2].y);
+
+	return dist <= 1;
+}
+
+void process_status(int player, int target)
+{
+	g_clients[player].exp += g_clients[target].level * 10;
+	if (g_clients[player].exp > g_clients[player].level * 100) {
+		++g_clients[player].level;
+		g_clients[player].exp -= g_clients[player].level * 100;
+		g_clients[player].hp *= 1.1;
+	}
+	send_stat_change(player);
+}
+
+void process_attack(int id)
+{
+	for (auto& i : g_clients[id].view_list)
+		if (isIn_atkRange(id, i)) {
+			if (i > MAX_USER) {
+				g_clients[i].hp -= 100;
+				char mess[MAX_STR_LEN];
+				sprintf_s(mess, "%s had %d damage. %d left",
+					g_clients[i].name, 100, g_clients[i].hp);
+				send_chat_packet(id, id, mess);
+
+				if (g_clients[i].hp <= 0) {
+					g_clients[i].in_use = false;
+					add_timer(i, OP_REVIVAL, system_clock::now() + 29s);
+					process_status(id, i);
+					sprintf_s(mess, "%s has dead, %d exp gain",
+						g_clients[i].name, g_clients[i].level * 10);
+				}
+			}
+		}
 }
 
 void process_packet(int id)
@@ -443,6 +512,14 @@ void process_packet(int id)
 		cs_packet_login* p = reinterpret_cast<cs_packet_login *>(g_clients[id].m_packet_start);
 
 		strcpy_s(g_clients[id].name, p->name);
+		for (int i = 0; i < MAX_USER; ++i) {
+			if (g_clients[i].in_use && (i != id))
+				if (strcmp(g_clients[i].name, g_clients[id].name) != 0);
+				else {
+					send_login_fail(id);
+					return;
+				}
+		}
 		set_userdata(id, true);
 
 		if(dbRetcode != SQL_SUCCESS && dbRetcode != SQL_SUCCESS_WITH_INFO)
@@ -478,13 +555,24 @@ void process_packet(int id)
 	}
 	case CS_MOVE: {
 		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
-		g_clients[id].move_time = p->move_time;
-		process_move(id, p->direction);
+		//if (g_clients[id].move_time < p->move_time) {
+			g_clients[id].move_time = p->move_time;
+			process_move(id, p->direction);
+		//}
 	}
 		break;
 	case CS_LOGOUT:
 	{
 		disconnect_client(id);
+	}
+	break;
+	case CS_ATTACK:
+	{
+		cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(g_clients[id].m_packet_start);
+		if (g_clients[id].atk_time < p->atk_time) {
+			g_clients[id].atk_time = p->atk_time;
+			process_attack(id);
+		}
 	}
 	break;
 	default: cout << "Unknown Packet type [" << p_type << "] from Client [" << id << "]\n";
@@ -636,6 +724,7 @@ void worker_thread()
 			break;
 		case OP_RANDOM_MOVE:
 			random_move_npc(key);
+			delete over_ex;
 			break;
 		case OP_PLAYER_MOVE_NOTIFY:
 			lua_getglobal(g_clients[key].L, "event_player_move");
@@ -698,6 +787,8 @@ void initialize_NPC()
 	{
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].level = rand() % 10;
+		g_clients[i].hp = g_clients[i].level * 100;
 		char npc_name[50];
 		sprintf_s(npc_name, "N%d", i);
 		strcpy_s(g_clients[i].name, npc_name);

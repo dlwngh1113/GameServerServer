@@ -35,6 +35,9 @@
     <ClInclude Include="include\lualib.h">
       <Filter>헤더 파일\lua</Filter>
     </ClInclude>
+    <ClInclude Include="framework.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="monster.lua">

@@ -10,7 +10,7 @@ constexpr int MAX_STR_LEN = 100;
 constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
 
 //constexpr int NUM_NPC = 100000;
-constexpr int NUM_NPC = 100;
+constexpr int NUM_NPC = 1000;
 
 #pragma pack (push, 1)
 
@@ -108,6 +108,7 @@ struct cs_packet_move {
 struct cs_packet_attack {
 	char	size;
 	char	type;
+	int		atk_time;
 };
 
 struct cs_packet_chat {
