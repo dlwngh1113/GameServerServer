@@ -35,6 +35,7 @@ constexpr char OP_RANDOM_MOVE = 3;
 constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
 constexpr char OP_RUNAWAY = 5;
 constexpr char OP_REVIVAL = 6;
+constexpr char OP_HEAL = 7;
 
 constexpr int  KEY_SERVER = 1000000;
 
@@ -54,6 +55,7 @@ struct client_info {
 	short x, y;
 	int exp;
 	lua_State* L;
+	mutex lua_l;
 
 	bool in_use;
 	atomic_bool is_active;
@@ -110,7 +112,9 @@ void time_worker()
 	while (true) {
 		while (true) {
 			if (false == timer_queue.empty()) {
+				timer_l.lock();
 				event_type ev = timer_queue.top();
+				timer_l.unlock();
 				if (ev.wakeup_time > system_clock::now())
 					break;
 				timer_l.lock();
@@ -150,6 +154,13 @@ void time_worker()
 					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &over_ex->wsa_over);
 				}
 				break;
+				case OP_HEAL:
+				{
+					OVER_EX* over_ex = new OVER_EX;
+					over_ex->op_mode = OP_HEAL;
+					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &over_ex->wsa_over);
+				}
+					break;
 				default:
 					printf("Unknown event type: %c\n", ev.event_id);
 					break;
@@ -322,8 +333,10 @@ void process_move(int id, char dir)
 	}
 
 	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
-		if (true == is_near(id, i)) new_viewlist.insert(i);
-		wake_up_npc(i);
+		if (true == is_near(id, i)) {
+			new_viewlist.insert(i);
+			wake_up_npc(i);
+		}
 	}
 
 	// 시야에 들어온 객체 처리
@@ -410,7 +423,7 @@ void get_userdata(cs_packet_login* p, int id)
 		dbRetcode = SQLBindCol(hstmt, 2, SQL_C_SHORT, &POSX, 100, &cbPosX);
 		dbRetcode = SQLBindCol(hstmt, 3, SQL_C_SHORT, &POSY, 100, &cbPosY);
 		dbRetcode = SQLBindCol(hstmt, 4, SQL_C_LONG, &EXP, 100, &cbExp);
-		dbRetcode = SQLBindCol(hstmt, 5, SQL_C_LONG, &HP, 100, &cbHp);
+		dbRetcode = SQLBindCol(hstmt, 5, SQL_C_SHORT, &HP, 100, &cbHp);
 
 		dbRetcode = SQLFetch(hstmt);
 		if (dbRetcode == SQL_ERROR || dbRetcode == SQL_SUCCESS_WITH_INFO)
@@ -419,15 +432,13 @@ void get_userdata(cs_packet_login* p, int id)
 		{
 			g_clients[id].c_lock.lock();
 			strcpy_s(g_clients[id].name, p->name);
-			g_clients[id].c_lock.unlock();
 
 			g_clients[id].level = LEVEL;
 			g_clients[id].x = POSX;
 			g_clients[id].y = POSY;
 			g_clients[id].exp = EXP;
 			g_clients[id].hp = HP;
-			//printf("user[%s] level - %d, x - %hd, y - %hd, exp - %d\n",
-			//	g_clients[id].name, g_clients[id].level, g_clients[id].x, g_clients[id].y, g_clients[id].exp);
+			g_clients[id].c_lock.unlock();
 		}
 	}
 
@@ -436,6 +447,7 @@ void get_userdata(cs_packet_login* p, int id)
 
 void set_userdata(int id, bool isInit)
 {
+	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 	wchar_t tmp[MAX_STR_LEN] = { NULL };
 
 	int nChars = MultiByteToWideChar(CP_ACP, 0, g_clients[id].name, -1, NULL, 0);
@@ -450,7 +462,6 @@ void set_userdata(int id, bool isInit)
 		g_clients[id].hp = 100;
 		wsprintf(tmp, L"EXEC insert_player %s",	nameWchar);
 
-		dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 		dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
 
 		return;
@@ -464,11 +475,7 @@ void set_userdata(int id, bool isInit)
 		g_clients[id].y,
 		g_clients[id].exp,
 		g_clients[id].hp);
-	for (int i = 0; i < lstrlenW(tmp); ++i)
-		wcout << tmp[i];
-	cout << endl;
 
-	dbRetcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 	dbRetcode = SQLExecDirect(hstmt, (SQLWCHAR*)tmp, SQL_NTS);
 
 	delete[] nameWchar;
@@ -482,22 +489,12 @@ bool isIn_atkRange(int p1, int p2)
 	return dist <= 1;
 }
 
-void process_status(int player, int target)
-{
-	g_clients[player].exp += g_clients[target].level * 10;
-	if (g_clients[player].exp > g_clients[player].level * 100) {
-		++g_clients[player].level;
-		g_clients[player].exp -= g_clients[player].level * 100;
-		g_clients[player].hp *= 1.1;
-	}
-	send_stat_change(player);
-}
-
 void process_attack(int id)
 {
 	for (auto& i : g_clients[id].view_list)
 		if (isIn_atkRange(id, i)) {
 			if (is_npc(i)) {
+				g_clients[i].c_lock.lock();
 				g_clients[i].hp -= 100;
 				char mess[MAX_STR_LEN];
 				sprintf_s(mess, "%s had %d damage. %d left",
@@ -505,12 +502,21 @@ void process_attack(int id)
 				send_chat_packet(id, id, mess);
 
 				if (g_clients[i].hp <= 0) {
-					add_timer(i, OP_REVIVAL, system_clock::now() + 10s);
+					add_timer(i, OP_REVIVAL, system_clock::now() + 30s);
 					send_leave_packet(id, i);
-					process_status(id, i);
+					g_clients[id].c_lock.lock();
+					g_clients[id].exp += g_clients[i].level * 10;
+					if (g_clients[id].exp > g_clients[id].level * 100) {
+						++g_clients[id].level;
+						g_clients[id].exp -= g_clients[id].level * 100;
+						g_clients[id].hp = g_clients[id].level * 70;
+					}
+					g_clients[id].c_lock.unlock();
+					send_stat_change(id);
 					sprintf_s(mess, "%s has dead, %d exp gain",
 						g_clients[i].name, g_clients[i].level * 10);
 				}
+				g_clients[i].c_lock.unlock();
 			}
 		}
 }
@@ -567,10 +573,10 @@ void process_packet(int id)
 	}
 	case CS_MOVE: {
 		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
-		//if (g_clients[id].move_time < p->move_time) {
+		if (g_clients[id].move_time < p->move_time) {
 			g_clients[id].move_time = p->move_time;
 			process_move(id, p->direction);
-		//}
+		}
 	}
 		break;
 	case CS_LOGOUT:
@@ -587,6 +593,13 @@ void process_packet(int id)
 		}
 	}
 	break;
+	case CS_TELEPORT:
+	{
+		cs_packet_teleport* p = reinterpret_cast<cs_packet_teleport*>(g_clients[id].m_packet_start);
+		g_clients[id].x = p->x;
+		g_clients[id].y = p->y;
+	}
+		break;
 	default: cout << "Unknown Packet type [" << p_type << "] from Client [" << id << "]\n";
 		while (true);
 	}
@@ -678,6 +691,7 @@ void add_new_client(SOCKET ns)
 	g_accept_over.wsa_buf.len = static_cast<ULONG> (cSocket);
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(&g_accept_over.wsa_over));
 	AcceptEx(g_lSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
+	add_timer(i, OP_HEAL, system_clock::now() + 5s);
 }
 
 void disconnect_client(int id)
@@ -711,12 +725,13 @@ void worker_thread()
 		int key;
 		ULONG_PTR iocp_key;
 		WSAOVERLAPPED* lpover;
-		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
+		//int ret = 
+			GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
 		key = static_cast<int>(iocp_key);
 		// cout << "Completion Detected" << endl;
-		if (FALSE == ret) {
-			error_display("GQCS Error : ", WSAGetLastError());
-		}
+		//if (FALSE == ret) {
+		//	error_display("GQCS Error : ", WSAGetLastError());
+		//}
 
 		OVER_EX* over_ex = reinterpret_cast<OVER_EX*>(lpover);
 		switch (over_ex->op_mode) {
@@ -740,11 +755,29 @@ void worker_thread()
 			delete over_ex;
 			break;
 		case OP_PLAYER_MOVE_NOTIFY:
+			g_clients[key].lua_l.lock();
 			lua_getglobal(g_clients[key].L, "event_player_move");
 			lua_pushnumber(g_clients[key].L, over_ex->object_id);
 			lua_pcall(g_clients[key].L, 1, 1, 0);
-			if(over_ex)
-				delete over_ex;
+			g_clients[key].lua_l.unlock();
+			delete over_ex;
+			break;
+		case OP_HEAL:
+		{
+			g_clients[key].c_lock.lock();
+			short maxHp = g_clients[key].level * 70;
+			if (g_clients[key].hp + maxHp * 0.1 >= maxHp)
+				g_clients[key].hp = maxHp;
+			else if (g_clients[key].hp + maxHp * 0.1 < maxHp)
+				g_clients[key].hp += maxHp * 0.1;
+			g_clients[key].c_lock.unlock();
+			add_timer(key, OP_HEAL, system_clock::now() + 5s);
+			char mess[MAX_STR_LEN];
+			sprintf_s(mess, "auto healing...%s", g_clients[key].name);
+			send_chat_packet(key, key, mess);
+			send_stat_change(key);
+			delete over_ex;
+		}
 			break;
 		}
 	}
@@ -775,6 +808,24 @@ int API_SendEnterMessage(lua_State* L)
 	char* mess = (char*)lua_tostring(L, -1);
 
 	lua_pop(L, 3);
+
+	if (system_clock::now().time_since_epoch().count() > g_clients[my_id].atk_time)
+	{
+		g_clients[my_id].atk_time = system_clock::now().time_since_epoch().count();
+		g_clients[user_id].hp -= 10;
+
+		if (g_clients[user_id].hp <= 0) {
+			g_clients[user_id].exp /= 2;
+			g_clients[user_id].hp = g_clients[user_id].level * 70;
+			g_clients[user_id].x = 0;
+			g_clients[user_id].y = 0;
+		}
+
+		send_stat_change(user_id);
+		char tmp[MAX_STR_LEN];
+		sprintf_s(tmp, "You hit by id - %s", g_clients[my_id].name);
+		send_chat_packet(user_id, user_id, tmp);
+	}
 
 	send_chat_packet(user_id, my_id, mess);
 	return 0;
@@ -946,7 +997,7 @@ int main()
 	//thread ai_thread{ npc_ai_thread };
 	thread timer_thread{ time_worker };
 	vector <thread> worker_threads;
-	for (int i = 0; i < 6; ++i) 
+	for (int i = 0; i < 4; ++i) 
 		worker_threads.emplace_back(worker_thread);
 	for (auto& th : worker_threads)
 		th.join();

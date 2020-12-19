@@ -11,8 +11,6 @@ function event_player_move( player )
 	player_y = API_get_y(player);
 	my_x = API_get_x(myid);
 	my_y = API_get_y(myid);
-	print"LUA:";
-	print(player_x, player_y, my_x, my_y);
 	if(player_x == my_x)then
 		if(player_y == my_y) then
 		API_SendEnterMessage(myid, player, "HELLO");
